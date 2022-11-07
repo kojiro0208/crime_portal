@@ -14,7 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from gcp_class import Gcs_client
 
-MAPS_API_KEY = "AIzaSyDYQ7VjgrfBPWT9_02Qe1zXhI1cRJvcYOQ"
+MAPS_API_KEY = ""
 
 
 partition_list = [
