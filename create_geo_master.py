@@ -10,6 +10,9 @@ from mojimoji import zen_to_han
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from google.cloud import storage
+import pyarrow as pa
+import pyarrow.parquet as pq
+from gcp_class import Gcs_client
 
 MAPS_API_KEY = "AIzaSyDYQ7VjgrfBPWT9_02Qe1zXhI1cRJvcYOQ"
 
@@ -148,6 +151,7 @@ def load_data(bq, partition):
 
 def main():
     bq = Bigquery_cliant()
+    gcs_client = Gcs_client()
     for partition in partition_list:
         df = load_data(bq, partition)
         with open("dic_geo_master.json", "r") as f:
@@ -156,14 +160,37 @@ def main():
         for a in tqdm(set(df["address"])):
             print(a)
             if a not in geo_master:
-                # geo_master[a] = coordinate(a)
-                # time.sleep(8)
-                geo_master[a] = geocode(a)
-                time.sleep(1)
+                geo_master[a] = coordinate(a)
+                time.sleep(8)
+                # geo_master[a] = geocode(a)
+                # time.sleep(0.5)
                 i += 1
                 if i % 10 == 0:
                     with open("dic_geo_master.json", "w") as f:
                         json.dump(geo_master, f)
+                    with open("dic_geo_master.json", "r") as f:
+                        geo_master = json.load(f)
+                    # アップロード
+                    clean_geo_master = {
+                        add: geo
+                        for add, geo in geo_master.items()
+                        if (geo != ["0", "0"]) & (geo != [None, None])
+                    }
+                    df_geo_master = pd.DataFrame(
+                        {
+                            "address": clean_geo_master.keys(),
+                            "cood": clean_geo_master.values(),
+                        }
+                    )
+                    df_geo_master["lat"] = [float(l[0]) for l in df_geo_master["cood"]]
+                    df_geo_master["lng"] = [float(l[1]) for l in df_geo_master["cood"]]
+                    df_geo_master = df_geo_master.drop("cood", axis=1)
+                    local_file_name = f"geo_master.parquet"
+                    local_path = f"./output/{local_file_name}"
+                    upload_path = f"{local_file_name}"
+                    table = pa.Table.from_pandas(df_geo_master, preserve_index=False)
+                    pq.write_table(table, local_path)
+                    gcs_client.upload_gcs("geo_master", local_path, upload_path)
         with open("dic_geo_master.json", "w") as f:
             json.dump(geo_master, f)
 
