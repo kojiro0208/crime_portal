@@ -10,6 +10,8 @@ import pyarrow.parquet as pq
 
 from gcp_class import Gcs_client, Bigquery_cliant
 
+BUCKET_NAME = "crime_dashdata"
+
 cols_dict = {
     "罪名": "zaimei",
     "手口": "teguchi",
@@ -78,90 +80,73 @@ def read_csv_all_encode(file):
     return d
 
 
-# GCSにアップロード
-BUCKET_NAME = "crime_dashboard"
-gcs_client = Gcs_client()
-gcs_client.create_bucket(BUCKET_NAME)
-files = glob.glob("./data/**/*.csv", recursive=True)
-fields = []
-for c in cols_dict.values():
-    fields.append(pa.field(c, pa.string()))
-table_schema = pa.schema(fields)
-all_objects = gcs_client.list_all_objects(BUCKET_NAME)
-for f in files:
-    d = read_csv_all_encode(f)
+def create_tabel():
+    # テーブル作成
+    bq_cliant = Bigquery_cliant()
+    table_id = "crimes-porttal.portal_dataset.crimes"
+    url = f"gs://{BUCKET_NAME}/*"
+    source_uri_prefix = f"gs://{BUCKET_NAME}"
 
-    d["file_name"] = os.path.basename(f)
-    d["nendo"] = int(re.findall("20\d\d", f)[0])
-    d.columns = [
-        c.replace("（発生地）", "").replace("（始期）", "").replace("\n", "") for c in d.columns
-    ]
-    d.columns = [
-        zen_to_han(c, kana=False).replace('"', "").replace("[", "") for c in d.columns
-    ]
-    for c in d.select_dtypes("object").columns:
-        d[c] = d[c].str.replace('"|”', "")
-    d = d.rename(columns={"発生場所の属性": "発生場所の詳細"})
-    d["address"] = d["都道府県"] + d["市区町村"].fillna("") + d["町丁目"].fillna("")
-    d["address"] = [zen_to_han(a, kana=False) for a in d["address"]]
-    d = d[~d["罪名"].isna()]
-    if len(d) == 0:
-        continue
-    # 列名を英字に変換
-    d.columns = [cols_dict.get(c) for c in d.columns]
-    d = add_all_cols(d, list(cols_dict.values()))
-    # 欠損をから文字で埋める
-    d = d.fillna("")
-    # 全てを文字列に
-    for c in d.columns:
-        d[c] = d[c].astype(str)
-    # ファイル名に件名、フォルダ名に手口をつける。
-    pref = os.path.dirname(f).split("/")[-1]
-    teguchi = ja_to_en[d["teguchi"].values[0]]
-    local_file_name = os.path.basename(f.lower()).replace(".csv", "")
-    local_file_name = f"{pref}_{local_file_name}.parquet"
-    local_path = f"./output/{local_file_name}"
-    upload_path = f"teguchi_en={teguchi}/{local_file_name}"
-    # すでにファイルがあればスキップ
-    if upload_path in set(all_objects):
-        continue
-    table = pa.Table.from_pandas(d, schema=table_schema, preserve_index=False)
-    pq.write_table(table, local_path)
-    gcs_client.upload_gcs(BUCKET_NAME, local_path, upload_path)
+    schema = []
+    for c in cols_dict.values():
+        schema.append(bigquery.SchemaField(c, "STRING", mode="NULLABLE"))
+
+    bq_cliant.create_external_table(table_id, url, source_uri_prefix, schema)
 
 
-# テーブル作成
-bq_cliant = Bigquery_cliant()
-table_id = "crimes-porttal.portal_dataset.crimes"
-url = f"gs://{BUCKET_NAME}/*"
-source_uri_prefix = f"gs://{BUCKET_NAME}"
+def main():
+    # GCSにアップロード
+    gcs_client = Gcs_client()
+    gcs_client.create_bucket(BUCKET_NAME)
+    files = glob.glob("./data/**/*.csv", recursive=True)
+    fields = []
+    for c in cols_dict.values():
+        fields.append(pa.field(c, pa.string()))
+    table_schema = pa.schema(fields)
+    all_objects = gcs_client.list_all_objects(BUCKET_NAME)
+    for f in files:
+        d = read_csv_all_encode(f)
 
-schema = []
-for c in cols_dict.values():
-    schema.append(bigquery.SchemaField(c, "STRING", mode="NULLABLE"))
+        d["file_name"] = os.path.basename(f)
+        d["nendo"] = int(re.findall("20\d\d", f)[0])
+        d.columns = [
+            c.replace("（発生地）", "").replace("（始期）", "").replace("\n", "")
+            for c in d.columns
+        ]
+        d.columns = [
+            zen_to_han(c, kana=False).replace('"', "").replace("[", "")
+            for c in d.columns
+        ]
+        for c in d.select_dtypes("object").columns:
+            d[c] = d[c].str.replace('"|”', "")
+        d = d.rename(columns={"発生場所の属性": "発生場所の詳細"})
+        d["address"] = d["都道府県"] + d["市区町村"].fillna("") + d["町丁目"].fillna("")
+        d["address"] = [zen_to_han(a, kana=False) for a in d["address"].astype(str)]
+        d = d[~d["罪名"].isna()]
+        if len(d) == 0:
+            continue
+        # 列名を英字に変換
+        d.columns = [cols_dict.get(c) for c in d.columns]
+        d = add_all_cols(d, list(cols_dict.values()))
+        # 欠損をから文字で埋める
+        d = d.fillna("")
+        # 全てを文字列に
+        for c in d.columns:
+            d[c] = d[c].astype(str)
+        # ファイル名に件名、フォルダ名に手口をつける。
+        pref = os.path.dirname(f).split("/")[-1]
+        teguchi = ja_to_en[d["teguchi"].values[0]]
+        local_file_name = os.path.basename(f.lower()).replace(".csv", "")
+        local_file_name = f"{pref}_{local_file_name}.parquet"
+        local_path = f"./output/{local_file_name}"
+        upload_path = f"teguchi_en={teguchi}/{local_file_name}"
+        # すでにファイルがあればスキップ
+        if upload_path in set(all_objects):
+            continue
+        table = pa.Table.from_pandas(d, schema=table_schema, preserve_index=False)
+        pq.write_table(table, local_path)
+        gcs_client.upload_gcs(BUCKET_NAME, local_path, upload_path)
 
-bq_cliant.create_external_table(table_id, url, source_uri_prefix, schema)
 
-
-# マスター
-BUCKET_NAME = "geo_master"
-gcs_client = Gcs_client()
-gcs_client.create_bucket(BUCKET_NAME)
-with open("dic_geo_master.json", "r") as f:
-    geo_master = json.load(f)
-
-df_geo_master = pd.DataFrame(
-    {
-        "address": geo_master.keys(),
-        "cood": geo_master.values(),
-    }
-)
-df_geo_master["lat"] = [float(l[0]) for l in df_geo_master["cood"]]
-df_geo_master["lng"] = [float(l[1]) for l in df_geo_master["cood"]]
-df_geo_master = df_geo_master.drop("cood", axis=1)
-local_file_name = f"geo_master.parquet"
-local_path = f"./output/{local_file_name}"
-upload_path = f"{local_file_name}"
-table = pa.Table.from_pandas(df_geo_master, preserve_index=False)
-pq.write_table(table, local_path)
-gcs_client.upload_gcs(BUCKET_NAME, local_path, upload_path)
+if __name__ == "__main__":
+    main()
